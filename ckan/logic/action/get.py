@@ -1,10 +1,13 @@
 from sqlalchemy.sql import select
+from sqlalchemy.orm import aliased
 from sqlalchemy import or_, and_, func, desc, case
 import uuid
 from pylons import config
+import logging
 
 import ckan
-from ckan.logic import NotFound
+from ckan.lib.base import _
+from ckan.logic import NotFound, ParameterError
 from ckan.logic import check_access
 from ckan.model import misc
 from ckan.plugins import (PluginImplementations,
@@ -29,7 +32,7 @@ from ckan.lib.dictization.model_dictize import (package_to_api1,
                                                 tag_to_api1,
                                                 tag_to_api2)
 from ckan.lib.search import query_for, SearchError
-import logging
+from ckan.logic.action import get_domain_object
 
 log = logging.getLogger('ckan.logic')
 
@@ -37,24 +40,7 @@ def _package_list_with_resources(context, package_revision_list):
     package_list = []
     model = context["model"]
     for package in package_revision_list:
-        result_dict = table_dictize(package, context)
-        res_rev = model.resource_revision_table
-        resource_group = model.resource_group_table
-        query = select([res_rev], from_obj = res_rev.join(resource_group,
-                   resource_group.c.id == res_rev.c.resource_group_id))
-        query = query.where(resource_group.c.package_id == package.id)
-        result = query.where(res_rev.c.current == True).execute()
-        result_dict["resources"] = resource_list_dictize(result, context)
-        license_id = result_dict['license_id']
-        if license_id:
-            try:
-                isopen = model.Package.get_license_register()[license_id].isopen()
-                result_dict['isopen'] = isopen
-            except KeyError:
-                # TODO: create a log message this error?
-                result_dict['isopen'] = False
-        else:
-            result_dict['isopen'] = False
+        result_dict = package_dictize(package,context)
         package_list.append(result_dict)
     return package_list
 
@@ -69,7 +55,7 @@ def package_list(context, data_dict):
     user = context["user"]
     api = context.get("api_version", '1')
     ref_package_by = 'id' if api == '2' else 'name'
-    
+
     check_access('package_list', context, data_dict)
 
     query = model.Session.query(model.PackageRevision)
@@ -130,9 +116,9 @@ def group_list(context, data_dict):
     ref_group_by = 'id' if api == '2' else 'name';
     order_by = data_dict.get('order_by', 'name')
     if order_by not in set(('name', 'packages')):
-        raise ValidationError('"order_by" value %r not implemented.' % order_by)
+        raise ParameterError('"order_by" value %r not implemented.' % order_by)
     all_fields = data_dict.get('all_fields',None)
-   
+
     check_access('group_list',context, data_dict)
 
     query = model.Session.query(model.Group).join(model.GroupRevision)
@@ -170,7 +156,7 @@ def group_list_authz(context, data_dict):
 
     query = Authorizer().authorized_query(user, model.Group, model.Action.EDIT)
     groups = set(query.all())
-    
+
     if available_only:
         package = context.get('package')
         if package:
@@ -324,7 +310,7 @@ def package_relationships_list(context, data_dict):
         rel = None
 
     check_access('package_relationships_list',context, data_dict)
-    
+
     # TODO: How to handle this object level authz?
     relationships = Authorizer().\
                     authorized_package_relationships(\
@@ -438,6 +424,9 @@ def group_package_show(context, data_dict):
 
     if limit:
         query = query.limit(limit)
+
+    if context.get('return_query'):
+        return query
 
     result = []
     for pkg_rev in query.all():
@@ -674,37 +663,58 @@ def package_search(context, data_dict):
 
     check_access('package_search', context, data_dict)
 
-    # return a list of package ids
-    data_dict['fl'] = 'id'
+    # check if some extension needs to modify the search params
+    for item in PluginImplementations(IPackageController):
+        data_dict = item.before_search(data_dict)
 
-    query = query_for(model.Package)
-    query.run(data_dict)
+    # the extension may have decided that it's no necessary to perform the query
+    abort = data_dict.get('abort_search',False)
 
     results = []
-    for package in query.results:
-        # get the package object
-        pkg_query = session.query(model.PackageRevision)\
-            .filter(model.PackageRevision.id == package)\
-            .filter(and_(
-                model.PackageRevision.state == u'active', 
-                model.PackageRevision.current == True
-            ))
-        pkg = pkg_query.first()
+    if not abort:
+        # return a list of package ids
+        data_dict['fl'] = 'id'
 
-        ## if the index has got a package that is not in ckan then
-        ## ignore it.
-        if not pkg:
-            log.warning('package %s in index but not in database' % package)
-            continue
+        query = query_for(model.Package)
+        query.run(data_dict)
 
-        result_dict = package_dictize(pkg,context)
-        results.append(result_dict)
+        for package in query.results:
+            # get the package object
+            pkg_query = session.query(model.PackageRevision)\
+                .filter(model.PackageRevision.id == package)\
+                .filter(and_(
+                    model.PackageRevision.state == u'active',
+                    model.PackageRevision.current == True
+                ))
+            pkg = pkg_query.first()
 
-    return {
-        'count': query.count,
-        'facets': query.facets,
+            ## if the index has got a package that is not in ckan then
+            ## ignore it.
+            if not pkg:
+                log.warning('package %s in index but not in database' % package)
+                continue
+
+            result_dict = package_dictize(pkg,context)
+            results.append(result_dict)
+
+        count = query.count
+        facets = query.facets
+    else:
+        count = 0
+        facets = {}
+        results = []
+
+    search_results = {
+        'count': count,
+        'facets': facets,
         'results': results
     }
+
+    # check if some extension needs to modify the search results
+    for item in PluginImplementations(IPackageController):
+        search_results = item.after_search(search_results,data_dict)
+
+    return search_results
 
 def _extend_package_dict(package_dict,context):
     model = context['model']
@@ -749,7 +759,7 @@ def resource_search(context, data_dict):
             raise SearchError('Field "%s" not recognised in Resource search.' % field)
         for term in terms:
             model_attr = getattr(model.Resource, field)
-            if field == 'hash':                
+            if field == 'hash':
                 q = q.filter(model_attr.ilike(unicode(term) + '%'))
             elif field in model.Resource.get_extra_columns():
                 model_attr = getattr(model.Resource, 'extras')
@@ -761,7 +771,7 @@ def resource_search(context, data_dict):
                 q = q.filter(like)
             else:
                 q = q.filter(model_attr.ilike('%' + unicode(term) + '%'))
-    
+
     if order_by is not None:
         if hasattr(model.Resource, order_by):
             q = q.order_by(getattr(model.Resource, order_by))
@@ -769,7 +779,7 @@ def resource_search(context, data_dict):
     count = q.count()
     q = q.offset(offset)
     q = q.limit(limit)
-    
+
     results = []
     for result in q:
         if isinstance(result, tuple) and isinstance(result[0], model.DomainObject):
@@ -853,6 +863,62 @@ def get_site_user(context, data_dict):
             model.Session.commit()
     return {'name': user.name,
             'apikey': user.apikey}
+
+def roles_show(context, data_dict):
+    '''Returns the roles that users (and authorization groups) have on a
+    particular domain_object.
+    
+    If you specify a user (or authorization group) then the resulting roles
+    will be filtered by those of that user (or authorization group).
+
+    domain_object can be a package/group/authorization_group name or id.
+    '''
+    model = context['model']
+    session = context['session']
+    domain_object_ref = data_dict['domain_object']
+    user_ref = data_dict.get('user')
+    authgroup_ref = data_dict.get('authorization_group')
+
+    domain_object = get_domain_object(model, domain_object_ref)
+    if isinstance(domain_object, model.Package):
+        query = session.query(model.PackageRole).join('package')
+    elif isinstance(domain_object, model.Group):
+        query = session.query(model.GroupRole).join('group')
+    elif isinstance(domain_object, model.AuthorizationGroup):
+        query = session.query(model.AuthorizationGroupRole).join('authorization_group')
+    else:
+        raise NotFound(_('Cannot list entity of this type: %s') % type(domain_object).__name__)
+    # Filter by the domain_obj
+    query = query.filter_by(id=domain_object.id)
+
+    # Filter by the user / authorized_group
+    if user_ref:
+        user = model.User.get(user_ref)
+        if not user:
+            raise NotFound(_('unknown user:') + repr(user_ref))
+        query = query.join('user').filter_by(id=user.id)
+    if authgroup_ref:
+        authgroup = model.AuthorizationGroup.get(authgroup_ref)
+        if not authgroup:
+            raise NotFound('unknown authorization group:' + repr(authgroup_ref))
+        # we need an alias as we join to model.AuthorizationGroup table twice
+        ag = aliased(model.AuthorizationGroup)
+        query = query.join(ag, model.AuthorizationGroupRole.authorized_group) \
+                .filter_by(id=authgroup.id)
+
+    uors = query.all()
+
+    uors_dictized = [table_dictize(uor, context) for uor in uors]
+
+    result = {'domain_object_type': type(domain_object).__name__,
+              'domain_object_id': domain_object.id,
+              'roles': uors_dictized}
+    if user_ref:
+        result['user'] = user.id
+    if authgroup_ref:
+        result['authorization_group'] = authgroup.id
+
+    return result
 
 def status_show(context, data_dict):
     '''Provides information about the operation of this CKAN instance.'''

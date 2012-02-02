@@ -5,6 +5,7 @@ from nose.tools import assert_equal, assert_raises
 from ckan.lib.create_test_data import CreateTestData
 from ckan import plugins
 import ckan.lib.search as search
+from ckan.lib.search.common import SolrSettings
 
 from ckan.tests.functional.api.base import BaseModelApiTestCase
 from ckan.tests.functional.api.base import Api1TestCase as Version1TestCase
@@ -266,9 +267,9 @@ class PackagesTestCase(BaseModelApiTestCase):
         Test that we can't add a package if Solr is down.
         """
         bad_solr_url = 'http://127.0.0.1/badsolrurl'
-        solr_url = search.common.solr_url
+        original_settings = SolrSettings.get()[0]
         try:
-            search.common.solr_url = bad_solr_url
+            SolrSettings.init(bad_solr_url)
             plugins.load('synchronous_search')
 
             assert not self.get_package_by_name(self.package_fixture_data['name'])
@@ -279,7 +280,7 @@ class PackagesTestCase(BaseModelApiTestCase):
             model.Session.remove()
         finally:
             plugins.unload('synchronous_search')
-            search.common.solr_url = solr_url
+            SolrSettings.init(original_settings)
 
     def test_register_post_tag_too_long(self):
         pkg = {'name': 'test_tag_too_long',
@@ -501,6 +502,33 @@ class PackagesTestCase(BaseModelApiTestCase):
     def test_entity_update_ok_by_name_by_put(self):
         self.assert_package_update_ok('name', 'put')
 
+    def test_package_update_invalid(self):
+        old_fixture_data = {
+            'name': self.package_fixture_data['name'],
+        }
+        new_fixture_data = {
+            'name':u'somethingnew',
+            'resources': [{
+                u'url':u'http://blah.com/file1.xml',
+                u'size':u'abc', # INVALID
+            },{
+                u'url':u'http://blah.com/file2.xml',
+                u'size':u'400',
+                u'last_modified':u'123', # INVALID
+            }],
+        }
+        self.create_package_roles_revision(old_fixture_data)
+        pkg = self.get_package_by_name(old_fixture_data['name'])
+        offset = self.offset('/rest/dataset/%s' % pkg.name)
+        params = '%s=1' % self.dumps(new_fixture_data)
+        res = self.app.post(offset, params=params,
+                            status=self.STATUS_409_CONFLICT,
+                            extra_environ=self.extra_environ)
+        res_dict = self.loads(res.body)
+        assert len(res_dict['resources']) == 2, res_dict['resources']
+        assert_equal(res_dict['resources'][0], {u'size': [u'Invalid integer']})
+        assert_equal(res_dict['resources'][1], {u'last_modified': [u'Date format incorrect']})
+
     def test_package_update_delete_last_extra(self):
         old_fixture_data = {
             'name': self.package_fixture_data['name'],
@@ -628,9 +656,9 @@ class PackagesTestCase(BaseModelApiTestCase):
         Test that we can't update a package if Solr is down.
         """
         bad_solr_url = 'http://127.0.0.1/badsolrurl'
-        solr_url = search.common.solr_url
+        original_settings = SolrSettings.get()[0]
         try:
-            search.common.solr_url = bad_solr_url
+            SolrSettings.init(bad_solr_url)
             plugins.load('synchronous_search')
 
             assert_raises(
@@ -638,7 +666,7 @@ class PackagesTestCase(BaseModelApiTestCase):
             )
         finally:
             plugins.unload('synchronous_search')
-            search.common.solr_url = solr_url
+            SolrSettings.init(original_settings)
 
     def test_entity_delete_ok(self):
         # create a package with package_fixture_data

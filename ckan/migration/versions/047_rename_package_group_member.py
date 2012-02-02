@@ -78,8 +78,8 @@ ALTER TABLE "group_revision"
 update member set table_name = 'package', capacity = 'member';
 update member_revision set table_name = 'package', capacity = 'member';
 
-update "group" set type = 'dataset_group';
-update group_revision set type = 'dataset_group';
+update "group" set type = 'group';
+update group_revision set type = 'group';
 
 
 ALTER TABLE "member"
@@ -101,6 +101,7 @@ ALTER TABLE "package"
 	ADD COLUMN "type" text;
 ALTER TABLE "package_revision"
 	ADD COLUMN "type" text;
+	
 
 COMMIT;
     '''

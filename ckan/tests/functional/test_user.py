@@ -32,6 +32,8 @@ class TestUserController(FunctionalTestCase, HtmlCheckMethods, PylonsTestCase, S
 
     @classmethod
     def teardown_class(self):
+        # clear routes 'id' so that next test to run doesn't get it
+        self.app.get(url_for(controller='user', action='login', id=None))
         SmtpServerHarness.teardown_class()
         model.repo.rebuild_db()
 
@@ -68,7 +70,7 @@ class TestUserController(FunctionalTestCase, HtmlCheckMethods, PylonsTestCase, S
 
     def test_user_read_without_id_but_logged_in(self):
         user = model.User.by_name(u'annafan')
-        offset = '/user/'
+        offset = '/user/annafan'
         res = self.app.get(offset, status=200, extra_environ={'REMOTE_USER': str(user.name)})
         main_res = self.main_div(res)
         assert 'annafan' in main_res, main_res
@@ -168,12 +170,14 @@ class TestUserController(FunctionalTestCase, HtmlCheckMethods, PylonsTestCase, S
 
         # first get redirected to user/logged_in
         assert_equal(res.status, 302)
-        assert res.header('Location').startswith('http://localhost/user/logged_in')
+        assert res.header('Location').startswith('http://localhost/user/logged_in') or \
+               res.header('Location').startswith('/user/logged_in')
 
         # then get redirected to user page
         res = res.follow()
         assert_equal(res.status, 302)
-        assert_equal(res.header('Location'), 'http://localhost/user/testlogin')
+        assert res.header('Location') in ('http://localhost/user/testlogin',
+                                          '/user/testlogin')
         res = res.follow()
         assert_equal(res.status, 200)
         assert 'testlogin is now logged in' in res.body
@@ -215,12 +219,14 @@ class TestUserController(FunctionalTestCase, HtmlCheckMethods, PylonsTestCase, S
 
         # first get redirected to logged_in
         assert_equal(res.status, 302)
-        assert res.header('Location').startswith('http://localhost/user/logged_in')
+        assert res.header('Location').startswith('http://localhost/user/logged_in') or \
+               res.header('Location').startswith('/user/logged_in')
 
         # then get redirected to login
         res = res.follow()
         assert_equal(res.status, 302)
-        assert res.header('Location').startswith('http://localhost/user/login')
+        assert res.header('Location').startswith('http://localhost/user/login') or \
+               res.header('Location').startswith('/user/login')
         res = res.follow()
         assert_equal(res.status, 200)
         assert 'Login failed. Bad username or password.' in res.body

@@ -143,6 +143,14 @@ def subnav_link(c, text, action, **kwargs):
         url_for(action=action, **kwargs),
         class_=('active' if c.action == action else '')
     )
+    
+def subnav_named_route(c, text, routename,**kwargs):
+    """ Generate a subnav element based on a named route """
+    return link_to(
+        text, 
+        url_for(routename, **kwargs),
+        class_=('active' if c.action == kwargs['action'] else '')
+    )    
 
 def facet_items(c, name, limit=10):
     from pylons import request
@@ -198,14 +206,28 @@ def linked_user(user, maxlength=0):
         _name = user.name if model.User.VALID_NAME.match(user.name) else user.id
         # Absolute URL of default user icon
         from pylons import config 
-        _site_url = config.get('ckan.site_url', '')
-        _icon_url_default = _site_url + icon_url("user")
+        _icon_url_default = icon_url("user")
         _icon = gravatar(user.email_hash, 16, _icon_url_default)+" "
         displayname = user.display_name
         if maxlength and len(user.display_name) > maxlength:
             displayname = displayname[:maxlength] + '...'
         return _icon + link_to(displayname, 
                        url_for(controller='user', action='read', id=_name))
+
+def linked_authorization_group(authgroup, maxlength=0):
+    from ckan import model
+    from urllib import quote
+    if not isinstance(authgroup, model.AuthorizationGroup):
+        authgroup_name = unicode(authgroup)
+        authgroup = model.AuthorizationGroup.get(authgroup_name)
+        if not authgroup:
+            return authgroup_name
+    if authgroup:
+        displayname = authgroup.name or authgroup.id
+        if maxlength and len(display_name) > maxlength:
+            displayname = displayname[:maxlength] + '...'
+        return link_to(displayname, 
+                       url_for(controller='authorization_group', action='read', id=displayname))
 
 def group_name_to_title(name):
     from ckan import model
@@ -215,14 +237,14 @@ def group_name_to_title(name):
     return name
 
 def markdown_extract(text, extract_length=190):
-    if (text is None) or (text == ''):
+    if (text is None) or (text.strip() == ''):
         return ''
     html = fromstring(markdown(text))
     plain = html.xpath("string()")
     return unicode(truncate(plain, length=extract_length, indicator='...', whole_word=True))
 
 def icon_url(name):
-    return '/images/icons/%s.png' % name
+    return url_for('/images/icons/%s.png' % name)
 
 def icon_html(url, alt=None):
     return literal('<img src="%s" height="16px" width="16px" alt="%s" /> ' % (url, alt))
@@ -304,7 +326,7 @@ def dataset_display_name(package_or_package_dict):
     if isinstance(package_or_package_dict, dict):
         return package_or_package_dict.get('title', '') or package_or_package_dict.get('name', '')
     else:
-        return package_or_package_dict.title or package_or_package_dictname
+        return package_or_package_dict.title or package_or_package_dict.name
 
 def dataset_link(package_or_package_dict):
     if isinstance(package_or_package_dict, dict):

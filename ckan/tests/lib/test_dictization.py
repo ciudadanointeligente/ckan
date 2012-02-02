@@ -37,18 +37,19 @@ class TestBasicDictize:
                {'key': u'original media', 'state': u'active', 'value': u'"book"'}],
             'groups': [{'description': u'These are books that David likes.',
                         'name': u'david',
-                        'type': u'dataset_group',
+                        'type': u'group',
                         'state': u'active',
                         'title': u"Dave's books"},
                        {'description': u'Roger likes these books.',
                         'name': u'roger',
-                        'type': u'dataset_group',
+                        'type': u'group',
                         'state': u'active',
                         'title': u"Roger's books"}],
             'isopen': True,
             'license_id': u'other-open',
             'maintainer': None,
             'maintainer_email': None,
+            'type': None,
             'name': u'annakarenina',
             'notes': u'Some test notes\n\n### A 3rd level heading\n\n**Some bolded text.**\n\n*Some italicized text.*\n\nForeign characters:\nu with umlaut \xfc\n66-style quote \u201c\nforeign word: th\xfcmb\n \nNeeds escaping:\nleft arrow <\n\n<http://ckan.net/>\n\n',
             'relationships_as_object': [],
@@ -103,11 +104,6 @@ class TestBasicDictize:
         model.repo.rebuild_db()
         model.Session.remove()
 
-    def teardonwn(self):
-        model.Session.remove()
-
-
-
     def remove_changable_columns(self, dict):
         for key, value in dict.items():
             if key.endswith('id') and key <> 'license_id':
@@ -115,6 +111,8 @@ class TestBasicDictize:
             if key == 'created':
                 dict.pop(key)
             if 'timestamp' in key:
+                dict.pop(key)
+            if key in ['metadata_created','metadata_modified']:
                 dict.pop(key)
             if isinstance(value, list):
                 for new_dict in value:
@@ -148,6 +146,7 @@ class TestBasicDictize:
             'maintainer': None,
             'maintainer_email': None,
             'name': u'annakarenina',
+            'type': None,
             'notes': u'Some test notes\n\n### A 3rd level heading\n\n**Some bolded text.**\n\n*Some italicized text.*\n\nForeign characters:\nu with umlaut \xfc\n66-style quote \u201c\nforeign word: th\xfcmb\n \nNeeds escaping:\nleft arrow <\n\n<http://ckan.net/>\n\n',
             'state': u'active',
             'title': u'A Novel By Tolstoy',
@@ -370,8 +369,8 @@ class TestBasicDictize:
         print anna_original
         print anna_after_save
 
-        assert self.remove_revision_id(anna_dictized) == self.remove_revision_id(package_dictized),\
-                "\n".join(unified_diff(anna_original.split("\n"), anna_after_save.split("\n")))
+        assert self.remove_changable_columns(anna_dictized) == self.remove_changable_columns(package_dictized)
+        assert "\n".join(unified_diff(anna_original.split("\n"), anna_after_save.split("\n")))
 
     def test_10_package_alter_pending(self):
 
@@ -834,7 +833,7 @@ class TestBasicDictize:
                       'title': 'help',
                       'extras': [{'key': 'genre', 'value': u'"horror"'},
                                  {'key': 'media', 'value': u'"dvd"'}],
-                      'packages':[{'name': 'annakarenina2'}, {'id': pkg.id}],
+                      'packages':[{'name': 'annakarenina2'}, {'id': pkg.id, 'capacity': 'in'}],
                       'users':[{'name': 'annafan'}],
                       'groups':[{'name': 'simple'}],
                       'tags':[{'name': 'russian'}]
@@ -855,8 +854,9 @@ class TestBasicDictize:
         expected =  {'description': u'',
                     'extras': [{'key': u'genre', 'state': u'active', 'value': u'"horror"'},
                                {'key': u'media', 'state': u'active', 'value': u'"dvd"'}],
-                    'tags': [{'name': u'russian'}],
+                    'tags': [{'capacity': 'member', 'name': u'russian'}],
                     'groups': [{'description': u'',
+                               'capacity' : 'member',
                                'display_name': u'simple',
                                'name': u'simple',
                                'packages': 0,
@@ -865,6 +865,7 @@ class TestBasicDictize:
                                'type': u'publisher'}],
                     'users': [{'about': u'I love reading Annakarenina. My site: <a href="http://anna.com">anna.com</a>',
                               'display_name': u'annafan',
+                              'capacity' : 'member',
                               'email': None,
                               'email_hash': 'd41d8cd98f00b204e9800998ecf8427e',
                               'fullname': None,
@@ -879,17 +880,22 @@ class TestBasicDictize:
                                   'license_id': u'other-open',
                                   'maintainer': None,
                                   'maintainer_email': None,
+                                  'type': None,
                                   'name': u'annakarenina3',
                                   'notes': u'Some test notes\n\n### A 3rd level heading\n\n**Some bolded text.**\n\n*Some italicized text.*\n\nForeign characters:\nu with umlaut \xfc\n66-style quote \u201c\nforeign word: th\xfcmb\n \nNeeds escaping:\nleft arrow <\n\n<http://ckan.net/>\n\n',
                                   'state': u'active',
+                                  'capacity' : 'in',
                                   'title': u'A Novel By Tolstoy',
                                   'url': u'http://www.annakarenina.com',
                                   'version': u'0.7a'},
                                  {'author': None,
                                   'author_email': None,
+                                  'capacity' : 'member',
+                                  'title': u'A Novel By Tolstoy',
                                   'license_id': u'other-open',
                                   'maintainer': None,
                                   'maintainer_email': None,
+                                  'type': None,
                                   'name': u'annakarenina2',
                                   'notes': u'Some test notes\n\n### A 3rd level heading\n\n**Some bolded text.**\n\n*Some italicized text.*\n\nForeign characters:\nu with umlaut \xfc\n66-style quote \u201c\nforeign word: th\xfcmb\n \nNeeds escaping:\nleft arrow <\n\n<http://ckan.net/>\n\n',
                                   'state': u'active',
@@ -898,7 +904,7 @@ class TestBasicDictize:
                                   'version': u'0.7a'}],
                     'state': u'active',
                     'title': u'help',
-                    'type': u'dataset_group'}
+                    'type': u'group'}
 
         expected['packages'] = sorted(expected['packages'], key=lambda x: x['name'])
 

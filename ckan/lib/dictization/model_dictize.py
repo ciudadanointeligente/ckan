@@ -2,6 +2,7 @@ from pylons import config
 from sqlalchemy.sql import select, and_
 import datetime
 
+from ckan.model import PackageRevision
 from ckan.lib.dictization import (obj_list_dictize,
                                   obj_dict_dictize,
                                   table_dictize)
@@ -19,7 +20,11 @@ def group_list_dictize(obj_list, context,
     result_list = []
 
     for obj in obj_list:
-        group_dict = table_dictize(obj, context)
+        if context.get('with_capacity'):
+            obj, capacity = obj
+            group_dict = table_dictize(obj, context, capacity=capacity)
+        else:
+            group_dict = table_dictize(obj, context)
         group_dict.pop('created')
         if active and obj.state not in ('active', 'pending'):
             continue
@@ -177,10 +182,23 @@ def package_dictize(pkg, context):
     q = select([rel_rev]).where(rel_rev.c.object_package_id == pkg.id)
     result = _execute_with_revision(q, rel_rev, context)
     result_dict["relationships_as_object"] = obj_list_dictize(result, context)
-    #isopen
-    # Get an actual Package object, not a PackageRevision
-    pkg_object = model.Package.get(pkg.id)
-    result_dict['isopen'] = pkg_object.isopen if isinstance(pkg_object.isopen,bool) else pkg_object.isopen()
+    
+    # Extra properties from the domain object
+    # We need an actual Package object for this, not a PackageRevision
+    if isinstance(pkg,PackageRevision):
+        pkg = model.Package.get(pkg.id)
+
+    # isopen
+    result_dict['isopen'] = pkg.isopen if isinstance(pkg.isopen,bool) else pkg.isopen()
+
+    # type
+    result_dict['type']= pkg.type
+
+    # creation and modification date
+    result_dict['metadata_modified'] = pkg.metadata_modified.isoformat() \
+        if pkg.metadata_modified else None
+    result_dict['metadata_created'] = pkg.metadata_created.isoformat() \
+        if pkg.metadata_created else None
 
     return result_dict
 
@@ -188,7 +206,7 @@ def _get_members(context, group, member_type):
 
     model = context['model']
     Entity = getattr(model, member_type[:-1].capitalize())
-    return model.Session.query(Entity).\
+    return model.Session.query(Entity, model.Member.capacity).\
                join(model.Member, model.Member.table_id == Entity.id).\
                filter(model.Member.group_id == group.id).\
                filter(model.Member.state == 'active').\
@@ -203,6 +221,8 @@ def group_dictize(group, context):
 
     result_dict['extras'] = extras_dict_dictize(
         group._extras, context)
+
+    context['with_capacity'] = True
 
     result_dict['packages'] = obj_list_dictize(
         _get_members(context, group, 'packages'),
@@ -220,6 +240,7 @@ def group_dictize(group, context):
         _get_members(context, group, 'users'),
         context)
 
+    context['with_capacity'] = False
 
     return result_dict
 
@@ -227,7 +248,12 @@ def tag_list_dictize(tag_list, context):
 
     result_list = []
     for tag in tag_list:
-        result_list.append(table_dictize(tag, context))
+        if context.get('with_capacity'):
+            tag, capacity = tag
+            dictized = table_dictize(tag, context, capacity=capacity)
+        else:
+            dictized = table_dictize(tag, context)
+        result_list.append(dictized)
 
     return result_list
 
@@ -254,7 +280,11 @@ def user_list_dictize(obj_list, context,
 
 def user_dictize(user, context):
 
-    result_dict = table_dictize(user, context)
+    if context.get('with_capacity'):
+        user, capacity = user
+        result_dict = table_dictize(user, context, capacity=capacity)
+    else:
+        result_dict = table_dictize(user, context)
 
     del result_dict['password']
     

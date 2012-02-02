@@ -37,6 +37,7 @@ package_table = Table('package', metadata,
         Column('maintainer_email', types.UnicodeText),                      
         Column('notes', types.UnicodeText),
         Column('license_id', types.UnicodeText),
+        Column('type', types.UnicodeText),
 )
 
 
@@ -217,7 +218,10 @@ class Package(vdm.sqlalchemy.RevisionedObjectMixin,
 
     def add_relationship(self, type_, related_package, comment=u''):
         '''Creates a new relationship between this package and a
-        related_package. It leaves the caller to commit the change.'''
+        related_package. It leaves the caller to commit the change.
+
+        Raises KeyError if the type_ is invalid.
+        '''
         import package_relationship
         from ckan import model
         if type_ in package_relationship.PackageRelationship.get_forward_types():
@@ -463,8 +467,7 @@ class Package(vdm.sqlalchemy.RevisionedObjectMixin,
         Return most recent timestamp for revisions related to this package.
         NB Excludes changes to the package's groups
         """
-        import ckan.model as model
-
+        from ckan import model
         where = [model.package_table.c.id == self.id]
         where_clauses = [
             and_(model.package_table.c.revision_id == model.revision_table.c.id, *where),
@@ -514,8 +517,7 @@ class Package(vdm.sqlalchemy.RevisionedObjectMixin,
         import ckan.model as model
         q = model.Session.query(model.PackageRevision)\
             .filter(model.PackageRevision.id == self.id)\
-            .order_by(model.PackageRevision.revision_timestamp.asc())\
-            .limit(1)
+            .order_by(model.PackageRevision.revision_timestamp.asc())
         ts = q.first()
         if ts is not None:
             return ts.revision_timestamp

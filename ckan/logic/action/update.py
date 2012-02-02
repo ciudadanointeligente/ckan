@@ -3,7 +3,7 @@ import re
 import datetime
 
 from ckan.plugins import PluginImplementations, IGroupController, IPackageController
-from ckan.logic import NotFound, ValidationError
+from ckan.logic import NotFound, ValidationError, ParameterError
 from ckan.logic import check_access
 
 from ckan.lib.base import _
@@ -28,8 +28,12 @@ from ckan.logic.schema import (default_update_group_schema,
                                default_update_package_schema,
                                default_update_user_schema,
                                default_update_resource_schema,
+                               default_update_relationship_schema,
                                default_task_status_schema)
 from ckan.lib.navl.dictization_functions import validate
+from ckan.logic.action import rename_keys, get_domain_object
+from ckan.logic.action.get import roles_show
+
 log = logging.getLogger(__name__)
 
 def prettify(field_name):
@@ -41,7 +45,7 @@ def package_error_summary(error_dict):
     error_summary = {}
     for key, error in error_dict.iteritems():
         if key == 'resources':
-            error_summary[_('Resources')] = _('Package resource(s) incomplete')
+            error_summary[_('Resources')] = _('Package resource(s) invalid')
         elif key == 'extras':
             error_summary[_('Extras')] = _('Missing Value')
         elif key == 'extras_validation':
@@ -75,6 +79,12 @@ def group_error_summary(error_dict):
     return error_summary
 
 def task_status_error_summary(error_dict):
+    error_summary = {}
+    for key, error in error_dict.iteritems():
+        error_summary[_(prettify(key))] = error[0]
+    return error_summary
+
+def relationship_error_summary(error_dict):
     error_summary = {}
     for key, error in error_dict.iteritems():
         error_summary[_(prettify(key))] = error[0]
@@ -166,6 +176,7 @@ def resource_update(context, data_dict):
     context["resource"] = resource
 
     if not resource:
+        logging.error('Could not find resource ' + id)
         raise NotFound(_('Resource was not found.'))
 
     check_access('resource_update', context, data_dict)
@@ -181,7 +192,7 @@ def resource_update(context, data_dict):
     if 'message' in context:
         rev.message = context['message']
     else:
-        rev.message = _(u'REST API: Update object %s') % data.get("name")
+        rev.message = _(u'REST API: Update object %s') % data.get("name", "")
 
     resource = resource_dict_save(data, context)
     if not context.get('defer_commit'):
@@ -277,18 +288,26 @@ def package_relationship_update(context, data_dict):
 
     model = context['model']
     user = context['user']
-    id = data_dict["id"]
-    id2 = data_dict["id2"]
-    rel = data_dict["rel"]
+    schema = context.get('schema') or default_update_relationship_schema()
     api = context.get('api_version') or '1'
+
+    id = data_dict['subject']
+    id2 = data_dict['object']
+    rel = data_dict['type']
     ref_package_by = 'id' if api == '2' else 'name'
 
     pkg1 = model.Package.get(id)
     pkg2 = model.Package.get(id2)
     if not pkg1:
-        raise NotFound('First package named in address was not found.')
+        raise NotFound('Subject package %r was not found.' % id)
     if not pkg2:
-        return NotFound('Second package named in address was not found.')
+        return NotFound('Object package %r was not found.' % id2)
+
+    data, errors = validate(data_dict, schema, context)
+
+    if errors:
+        model.Session.rollback()
+        raise ValidationError(errors, relationship_error_summary(errors))
 
     check_access('package_relationship_update', context, data_dict)
 
@@ -297,6 +316,7 @@ def package_relationship_update(context, data_dict):
         raise NotFound('This relationship between the packages was not found.')
     entity = existing_rels[0]
     comment = data_dict.get('comment', u'')
+    context['relationship'] = entity
     return _update_package_relationship(entity, comment, context)
 
 def group_update(context, data_dict):
@@ -339,7 +359,7 @@ def group_update(context, data_dict):
     return group_dictize(group, context)
 
 def user_update(context, data_dict):
-    '''Updates the user's details'''
+    '''Updates the user\'s details'''
 
     model = context['model']
     user = context['user']
@@ -379,7 +399,7 @@ def task_status_update(context, data_dict):
 
         if task_status is None:
             raise NotFound(_('TaskStatus was not found.'))
-
+    
     check_access('task_status_update', context, data_dict)
 
     data, errors = validate(data_dict, schema, context)
@@ -469,3 +489,106 @@ def group_update_rest(context, data_dict):
         group_dict = group_to_api2(group, context)
 
     return group_dict
+
+def package_relationship_update_rest(context, data_dict):
+
+    # rename keys
+    key_map = {'id': 'subject',
+               'id2': 'object',
+               'rel': 'type'}
+
+    # We want 'destructive', so that the value of the subject,
+    # object and rel in the URI overwrite any values for these
+    # in params. This is because you are not allowed to change
+    # these values.
+    data_dict = rename_keys(data_dict, key_map, destructive=True)
+
+    relationship_dict = package_relationship_update(context, data_dict)
+
+    return relationship_dict
+
+def user_role_update(context, data_dict):
+    '''
+    For a named user (or authz group), set his/her authz roles on a domain_object.
+    '''
+    model = context['model']
+    user = context['user'] # the current user, who is making the authz change
+
+    new_user_ref = data_dict.get('user') # the user who is being given the new role
+    new_authgroup_ref = data_dict.get('authorization_group') # the authgroup who is being given the new role
+    if bool(new_user_ref) == bool(new_authgroup_ref):
+        raise ParameterError('You must provide either "user" or "authorization_group" parameter.')
+    domain_object_ref = data_dict['domain_object']
+    if not isinstance(data_dict['roles'], (list, tuple)):
+        raise ParameterError('Parameter "%s" must be of type: "%s"' % ('role', 'list'))
+    desired_roles = set(data_dict['roles'])
+
+    if new_user_ref:
+        user_object = model.User.get(new_user_ref)
+        if not user_object:
+            raise NotFound('Cannot find user %r' % new_user_ref)
+        data_dict['user'] = user_object.id
+        add_user_to_role_func = model.add_user_to_role
+        remove_user_from_role_func = model.remove_user_from_role
+    else:
+        user_object = model.AuthorizationGroup.get(new_authgroup_ref)
+        if not user_object:
+            raise NotFound('Cannot find authorization group %r' % new_authgroup_ref)        
+        data_dict['authorization_group'] = user_object.id
+        add_user_to_role_func = model.add_authorization_group_to_role
+        remove_user_from_role_func = model.remove_authorization_group_from_role
+
+    domain_object = get_domain_object(model, domain_object_ref)
+    data_dict['id'] = domain_object.id
+    if isinstance(domain_object, model.Package):
+        check_access('package_edit_permissions', context, data_dict)
+    elif isinstance(domain_object, model.Group):
+        check_access('group_edit_permissions', context, data_dict)
+    elif isinstance(domain_object, model.AuthorizationGroup):
+        check_access('authorization_group_edit_permissions', context, data_dict)
+    # Todo: 'system' object
+    else:
+        raise ParameterError('Not possible to update roles for domain object type %s' % type(domain_object))
+
+    # current_uors: in order to avoid either creating a role twice or
+    # deleting one which is non-existent, we need to get the users\'
+    # current roles (if any)
+    current_role_dicts = roles_show(context, data_dict)['roles']
+    current_roles = set([role_dict['role'] for role_dict in current_role_dicts])
+
+    # Whenever our desired state is different from our current state,
+    # change it.
+    for role in (desired_roles - current_roles):
+        add_user_to_role_func(user_object, role, domain_object)
+    for role in (current_roles - desired_roles):
+        remove_user_from_role_func(user_object, role, domain_object)
+
+    # and finally commit all these changes to the database
+    if not (current_roles == desired_roles):
+        model.repo.commit_and_remove()
+
+    return roles_show(context, data_dict)
+
+def user_role_bulk_update(context, data_dict):
+    '''
+    For a given domain_object, update authz roles that several users have on it.
+    To delete all roles for a user on a domain object, set {roles: []}.
+    '''
+    for user_or_authgroup in ('user', 'authorization_group'):
+        # Collate all the roles for each user
+        roles_by_user = {} # user:roles
+        for user_role_dict in data_dict['user_roles']:
+            user = user_role_dict.get(user_or_authgroup)
+            if user:
+                roles = user_role_dict['roles']
+                if user not in roles_by_user:
+                    roles_by_user[user] = []
+                roles_by_user[user].extend(roles)
+        # For each user, update its roles
+        for user in roles_by_user:
+            uro_data_dict = {user_or_authgroup: user,
+                             'roles': roles_by_user[user],
+                             'domain_object': data_dict['domain_object']}
+            user_role_update(context, uro_data_dict)
+    return roles_show(context, data_dict)
+
